@@ -24,79 +24,62 @@ import android.graphics.PorterDuffXfermode;
 import android.graphics.RectF;
 import android.util.AttributeSet;
 import android.view.View;
-
-
-import com.amolg.flutterbarcodescanner.BarcodeCaptureActivity;
-import com.amolg.flutterbarcodescanner.FlutterBarcodeScannerPlugin;
-import com.amolg.flutterbarcodescanner.constants.AppConstants;
-import com.amolg.flutterbarcodescanner.utils.AppUtil;
+import com.google.android.gms.vision.CameraSource;
 
 import java.util.HashSet;
-import java.util.List;
 import java.util.Set;
-import java.util.Vector;
-
 
 public class GraphicOverlay<T extends GraphicOverlay.Graphic> extends View {
     private final Object mLock = new Object();
-    private float mWidthScaleFactor = 1.0f, mHeightScaleFactor = 1.0f;
-
+    private int mPreviewWidth;
+    private float mWidthScaleFactor = 1.0f;
+    private int mPreviewHeight;
+    private float mHeightScaleFactor = 1.0f;
     private int mFacing = CameraSource.CAMERA_FACING_BACK;
-    private Set<T> mGraphics = new HashSet<>();
+    private final Set<T> mGraphics = new HashSet<>();
 
-    /**
-     * Custom added values for overlay
-     */
-    private float left, top, endY;
-    private int rectWidth, rectHeight, frames, lineColor, lineWidth;
-    private boolean revAnimation;
+    private Paint mFinderMaskPaint;
+    private Paint mFinderBorderPaint;
+    private int lineColor = Color.parseColor("#FFFFFF");
+    private String scanMode;
 
 
     public static abstract class Graphic {
-        private GraphicOverlay mOverlay;
+        private final GraphicOverlay mOverlay;
 
         public Graphic(GraphicOverlay overlay) {
             mOverlay = overlay;
         }
-
         public abstract void draw(Canvas canvas);
-
-        public float scaleX(float horizontal) {
-            return horizontal * mOverlay.mWidthScaleFactor;
-        }
-
-        public float scaleY(float vertical) {
-            return vertical * mOverlay.mHeightScaleFactor;
-        }
-
-        public float translateX(float x) {
-            if (mOverlay.mFacing == CameraSource.CAMERA_FACING_FRONT) {
-                return mOverlay.getWidth() - scaleX(x);
-            } else {
-                return scaleX(x);
-            }
-        }
-
-        public float translateY(float y) {
-            return scaleY(y);
-        }
-
-        public void postInvalidate() {
-            mOverlay.postInvalidate();
+        public GraphicOverlay getOverlay() {
+            return mOverlay;
         }
     }
 
     public GraphicOverlay(Context context, AttributeSet attrs) {
         super(context, attrs);
+        setLayerType(LAYER_TYPE_SOFTWARE, null);
+        mFinderMaskPaint = new Paint();
+        mFinderMaskPaint.setColor(Color.BLACK);
+        mFinderMaskPaint.setStyle(Paint.Style.FILL);
+        mFinderMaskPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.CLEAR));
+        mFinderBorderPaint = new Paint();
+        mFinderBorderPaint.setColor(lineColor);
+        mFinderBorderPaint.setStrokeWidth(8);
+        mFinderBorderPaint.setStyle(Paint.Style.STROKE);
+    }
 
-        rectWidth = AppConstants.BARCODE_RECT_WIDTH;
-        rectHeight = BarcodeCaptureActivity.SCAN_MODE == BarcodeCaptureActivity.SCAN_MODE_ENUM.QR.ordinal()
-                ? AppConstants.BARCODE_RECT_HEIGHT : (int) (AppConstants.BARCODE_RECT_HEIGHT / 1.5);
+    public void setLineColor(String colorString) {
+        try {
+            lineColor = Color.parseColor(colorString);
+            mFinderBorderPaint.setColor(lineColor);
+        } catch (Exception e) {
+            // Ignore
+        }
+    }
 
-        lineColor = Color.parseColor(FlutterBarcodeScannerPlugin.lineColor);
-
-        lineWidth = AppConstants.BARCODE_LINE_WIDTH;
-        frames = AppConstants.BARCODE_FRAMES;
+    public void setScanMode(String mode) {
+        this.scanMode = mode;
     }
 
 
@@ -107,22 +90,12 @@ public class GraphicOverlay<T extends GraphicOverlay.Graphic> extends View {
         postInvalidate();
     }
 
-
     public void add(T graphic) {
         synchronized (mLock) {
             mGraphics.add(graphic);
         }
         postInvalidate();
     }
-
-    @Override
-    protected void onSizeChanged(int w, int h, int oldw, int oldh) {
-        left = (w - AppUtil.dpToPx(getContext(), rectWidth)) / 2;
-        top = (h - AppUtil.dpToPx(getContext(), rectHeight)) / 2;
-        endY = top;
-        super.onSizeChanged(w, h, oldw, oldh);
-    }
-
 
     public void remove(T graphic) {
         synchronized (mLock) {
@@ -131,59 +104,54 @@ public class GraphicOverlay<T extends GraphicOverlay.Graphic> extends View {
         postInvalidate();
     }
 
-    public List<T> getGraphics() {
+    public void setCameraInfo(int previewWidth, int previewHeight) {
         synchronized (mLock) {
-            return new Vector(mGraphics);
-        }
-    }
-
-    public float getWidthScaleFactor() {
-        return mWidthScaleFactor;
-    }
-
-    public float getHeightScaleFactor() {
-        return mHeightScaleFactor;
-    }
-
-    public void setCameraInfo(int previewWidth, int previewHeight, int facing) {
-        synchronized (mLock) {
-            mFacing = facing;
+            mPreviewWidth = previewWidth;
+            mPreviewHeight = previewHeight;
         }
         postInvalidate();
+    }
+
+    public float translateX(float x) {
+        if (mFacing == CameraSource.CAMERA_FACING_FRONT) {
+            return getWidth() - (x * mWidthScaleFactor);
+        } else {
+            return x * mWidthScaleFactor;
+        }
+    }
+
+    public float translateY(float y) {
+        return y * mHeightScaleFactor;
     }
 
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
 
-        // draw transparent rect
-        int cornerRadius = 0;
-        Paint eraser = new Paint();
-        eraser.setAntiAlias(true);
-        eraser.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.CLEAR));
+        synchronized (mLock) {
+            if ((mPreviewWidth != 0) && (mPreviewHeight != 0)) {
+                mWidthScaleFactor = (float) getWidth() / (float) mPreviewWidth;
+                mHeightScaleFactor = (float) getHeight() / (float) mPreviewHeight;
+            }
 
-        RectF rect = new RectF(left, top, AppUtil.dpToPx(getContext(), rectWidth) + left, AppUtil.dpToPx(getContext(), rectHeight) + top);
-        canvas.drawRoundRect(rect, (float) cornerRadius, (float) cornerRadius, eraser);
-
-        // draw horizontal line
-        Paint line = new Paint();
-        line.setColor(lineColor);
-        line.setStrokeWidth(Float.valueOf(lineWidth));
-
-        // draw the line to product animation
-        if (endY >= top + AppUtil.dpToPx(getContext(), rectHeight) + frames) {
-            revAnimation = true;
-        } else if (endY == top + frames) {
-            revAnimation = false;
+            for (Graphic graphic : mGraphics) {
+                graphic.draw(canvas);
+            }
         }
-
-        // check if the line has reached to bottom
-        if (revAnimation) {
-            endY -= frames;
+        int canvasWidth = canvas.getWidth();
+        int canvasHeight = canvas.getHeight();
+        RectF rect = new RectF(0, 0, canvasWidth, canvasHeight);
+        float rectWidth = canvasWidth * 0.8f;
+        float rectHeight;
+        if ("QR".equalsIgnoreCase(scanMode)) {
+            rectHeight = canvasWidth * 0.8f;
         } else {
-            endY += frames;
+            rectHeight = canvasWidth * 0.5f;
         }
-        canvas.drawLine(left, endY, left + AppUtil.dpToPx(getContext(), rectWidth), endY, line);
-        invalidate();
+        float left = (canvasWidth - rectWidth) / 2;
+        float top = (canvasHeight - rectHeight) / 2;
+        float right = left + rectWidth;
+        float bottom = top + rectHeight;
+        canvas.drawRect(left,top,right,bottom,mFinderBorderPaint);
     }
 }
